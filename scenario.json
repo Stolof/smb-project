@@ -1,0 +1,28 @@
+{
+    "done": {
+        "variables": {
+            "time": {
+                "op": "zero"
+            }
+        }
+    },
+    "reward": {
+        "variables": {
+            "xscrollLo": {
+                "reward": 1
+            },
+            "time": {
+                "penalty": 1
+            },
+            "lives": {
+                "penalty": 100
+            },
+            "score": {
+                "reward": 1
+            },
+            "coins": {
+                "reward": 1
+            }
+        }
+    }
+}
