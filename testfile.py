@@ -14,7 +14,7 @@ Mushroom
 import retro
 # To make the neural network
 from keras.models import Sequential
-from keras.layers import Dense, Flatten
+from keras.layers import Dense, Flatten, Conv2D
 from collections import deque
 
 # For calcuations
@@ -23,8 +23,7 @@ import random
 import cv2
 
 # Load the game
-# scenarion = 'scenario.json'
-env = retro.make(game='SuperMarioBros-Nes') # scenario = scenarion
+env = retro.make(game='SuperMarioBros-Nes') # scenario = 'scenario.json'
 
 
 def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but shit the same
@@ -36,8 +35,13 @@ def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but s
             policy[i] = 1 / len(policy)
     return policy
 
+def reframe(obs, height, width):
+    obs = cv2.cvtColor(obs, cv2.COLOR_BGR2GRAY) # Make gray and resize to get fewer inputs.
+    obs = cv2.resize(obs, (height,width)).reshape(height,width,-1)
+    return obs
+
 # Actions
-actions = [('RIGHT'), ('A'), ('RIGHT', 'A'), ('RIGHT', 'B')]
+actions = [('RIGHT'), ('RIGHT', 'A'), ('RIGHT', 'B'), ('RIGHT', 'A', 'B')]
 action_dict = {():[0,0,0,0,0,0,0,0,0] 
         , ('LEFT'): [0,0,0,0,0,0,1,0,0]
         , ('RIGHT'): [0,0,0,0,0,0,0,1,0]
@@ -53,19 +57,22 @@ action_dict = {():[0,0,0,0,0,0,0,0,0]
 
 # Parameters
 output_size = len(actions)
-epsilon = 0.99
-gamma = 0.9
-epsilon_decay = 0.9
-mini_batches = 128
-observation_steps = 40000
+epsilon = 1 # Chanche of taking a random action 
+gamma = 0.90 # Decay of reward for every step. Care about the future?
+epsilon_decay = 0.98 # Decay for epsilon
+mini_batches = 128 # Mini batch for learning 
+observation_steps = 10000 # 10k almost 400 time.
+img_height = 16 # Rescale size
+img_width = 12 
 done = False
-action_array = np.zeros(output_size)
+epsilon_goal = 0.1 # When the learning phace should stop
+action_array = np.zeros(output_size) # No need for this shit
 
-queue = deque() # To save states for learning
+queue = deque(maxlen=100000) # To save states for learning
 
 # The neural network
 model = Sequential()
-model.add(Dense(20, input_shape=(2,) + (16,12,1), init='uniform', activation='relu')) # 
+model.add(Dense(20, input_shape=(2,) + (img_height,img_width,1), init='uniform', activation='relu')) # 
 model.add(Flatten())       # Flatten input so as to have no problems with processing
 model.add(Dense(18, init='uniform', activation='relu'))
 model.add(Dense(10, init='uniform', activation='relu'))
@@ -73,45 +80,55 @@ model.add(Dense(output_size, init='uniform', activation='linear'))    # Same num
 
 model.compile(loss='mse', optimizer='adam', metrics=['accuracy'])
 
+model.summary()
+
 while True:
-    # Expolre the environment
     observation = env.reset()
-    observation2 = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY) # Make gray and resize to get fewer inputs.
-    observation = cv2.resize(observation2, (16,12)).reshape(16,12,-1)
+    observation = reframe(observation, img_height, img_width)
     obs = np.expand_dims(observation, axis=0) # Is this needed if we go grayScale?
     state = np.stack((obs, obs), axis=1)
+
     total_reward = 0
+    t = 0
+    
+    # Expolre the environment
+    while not (t == observation_steps): # It does not notice when it's game over?
+        if t % 10 == 0: # Every fourth frame/step take a new action / reward should be 
 
-    for i in range(observation_steps):
-        if i % 4 == 0: # Every fourth frame/step take a new action
-            # action_array = np.zeros(output_size) # Me no like this one
-
+            action_array = np.arange(output_size)
             Q = model.predict(state) # Get state from model/network
             policy = epsilon_greedy(Q, epsilon) # Get greedy or random choice for observation
-            action = actions[np.argmax(policy)]
-            # action = np.random.choice(actions, p = policy) # Choose an action
+            action = np.random.choice(action_array, p = policy) # Choose an action
+            action = actions[action]
 
-            action = action_dict[action] 
+            action = action_dict[action]
             observation_new, reward, done, info = env.step(action)
-            observation_new2 = cv2.cvtColor(observation_new, cv2.COLOR_BGR2GRAY)
-            observation_new = cv2.resize(observation_new2, (16,12)).reshape(16,12,-1)
-
+            observation_new = reframe(observation_new, img_height, img_width)
+            #print('Info {}'.format(info))
+            #print('Reward {}'.format(reward))
             obs_new = np.expand_dims(observation_new, axis=0)
+
             state_new = np.append(np.expand_dims(obs_new, axis=0), state[:, :1, :], axis=1)
             queue.append((state, action, reward, state_new, done)) # To remember
+
             state = state_new
             total_reward += reward
-            env.render() 
-        if done:
-            env.reset()
-            obs = np.expand_dims(observation, axis=0)
-            state = np.stack((obs, obs), axis=1)
+            env.render()
+        else: # Check if dead every other step. Should update reward aswell? 
+            _, reward, done, info = env.step(action)
+            total_reward += reward
+        t += 1
+        if done: # Observations 
+            print(' You are done!')
+            break
     print('Observing Finished')
-    print('Total reward in exploration: {}'.format(total_reward))
+    print('Total reward in exploration: {}'.format(total_reward, done))
 
-    env.reset()
-    #obs = np.expand_dims(observation, axis=0)
-    #state = np.stack((obs, obs), axis=1)
+    # This is only for the last step??
+    observation = env.reset() # No need if the loop gets done..
+    observation = reframe(observation, img_height, img_width)
+    obs = np.expand_dims(observation, axis=0)
+    state = np.stack((obs, obs), axis=1)
 
     # SECOND STEP: Learning from the observations (Experience replay)
     minibatch = random.sample(queue, mini_batches)                              # Sample some moves
@@ -141,30 +158,33 @@ while True:
         model.train_on_batch(inputs, targets)
     print('Learning Finished')
     epsilon = epsilon * epsilon_decay
-'''
+    print('Epsilon is {}'.format(epsilon))
+    if (epsilon < epsilon_goal):
+        break
+
 # THIRD STEP: Play!
 observation = env.reset()
+observation = reframe(observation, img_height, img_width)
 obs = np.expand_dims(observation, axis=0)
 state = np.stack((obs, obs), axis=1)
+
 done = False
-tot_reward = 0.0
+total_reward = 0
+t = 0
+
 while not done:
     t += 1
 
-    action_array = np.zeros(env.action_space.n)
-    Q = model.predict(state)        
-        
-#    policy = epsilon_greedy(Q, epsilon)
-#    action = np.random.choice(env.action_space.n, policy)         
-    action = np.argmax(Q)
-    action_array[action] = 1
-    observation, reward, done, info = env.step(action_array)
+    Q = model.predict(state) # Model chooses action
+    action = actions[np.argmax(Q)]
+    action = action_dict[action]
+    observation, reward, done, info = env.step(action)
+
+    observation = reframe(observation, img_height, img_width)
     obs = np.expand_dims(observation, axis=0)
     state = np.append(np.expand_dims(obs, axis=0), state[:, :1, :], axis=1)    
+    
     tot_reward += reward
     if t % 100 == 0:
         env.render()
-        print('Total reward: {}'.format(tot_reward))
-        print(Q)
 print('Game ended! Total reward: {}'.format(reward))
-'''
