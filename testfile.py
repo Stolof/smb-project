@@ -45,7 +45,7 @@ def calculate_td_targets(q1_batch, q2_batch, r_batch, t_batch, gamma=.90):
             actions[i] = 0
         else:
             Y[i] = r_batch[i] + gamma * (q2_batch[i][0][np.argmax(q1_batch[i][0])])
-            actions[i] = np.argmax(q1_batch[i][0])
+            actions[i] = np.argmax(q2_batch[i][0]) # Is this one correct!??!?!
     return Y, actions
 
 def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but shit the same
@@ -93,7 +93,7 @@ def make_cnn(): # Master CNN, no regularization.
     model.summary()
     return model
 
-def make_state():
+def make_state(): # Remove env.reset and remake.
     observation = env.reset()
     observation = reframe(observation, img_height, img_width)
     state = np.stack((observation, observation), axis=2)
@@ -164,7 +164,6 @@ while True:
             observation_new = reframe(observation_new, img_height, img_width)
             observation_new = np.expand_dims(observation_new, axis=-1)
 
-            # print(observation_new.shape)
             state_new = np.append(observation_new, state[:, :, :1], axis=2)
             queue.append((state, action, reward, state_new, done)) # To remember
 
