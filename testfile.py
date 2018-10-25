@@ -3,17 +3,23 @@ TODO
 -----
 - Could add parser for starting at different levels, and perhaps switch games
 
-- CNN?
+--------- TORSDAG
+- CNN
+- Plot values. Calc loss etc.
+- queue size 3000, 300 states/ run,  with 128 batch_size. (De tar 64 av 1000)
+- Double networks DDQN
+- How many frames should we stack, 4?
 
-- Plot values.
-
-- queue size. 
+- td_targets is not working
+- Make a plot of good info
 '''
 # The gym
 import retro
 # To make the neural network
 from keras.models import Sequential
-from keras.layers import Dense, Flatten, Conv2D
+from keras.layers import Dense, Flatten, Conv2D, Dropout, MaxPooling2D, BatchNormalization
+from keras.optimizers import Adam
+from keras import regularizers
 from collections import deque
 
 # For calcuations
@@ -21,12 +27,30 @@ import numpy as np
 import random
 import cv2
 
-# Load the game
-env = retro.make(game='SuperMarioBros-Nes') # scenario = 'scenario.json'
+def calculate_td_targets(q1_batch, q2_batch, r_batch, t_batch, gamma=.90):
+    '''
+    Calculates the TD-target used for the loss
+    : param q1_batch: Batch of Q(s', a) from online network, shape (N, num actions)
+    : param q2_batch: Batch of Q(s', a) from target network, shape (N, num actions)
+    : param r_batch: Batch of rewards, shape (N, 1)
+    : param t_batch: Batch of booleans indicating if state, s' is terminal, shape (N, 1)
+    : return: TD-target, shape (N, 1)
+    '''
+    Y = np.zeros(r_batch.shape)
+    actions = np.zeros(r_batch.shape)
+
+    for i in range(0, len(r_batch)):
+        if t_batch[i]:
+            Y[i] = r_batch[i]
+            actions[i] = 0
+        else:
+            Y[i] = r_batch[i] + gamma * (q2_batch[i][0][np.argmax(q1_batch[i][0])])
+            actions[i] = np.argmax(q1_batch[i][0])
+    return Y, actions
 
 def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but shit the same
-    policy = np.zeros(q_values.shape[1])
-    if random.uniform(0,1) <= epsilon:
+    policy = np.zeros(len(q_values))
+    if random.uniform(0,1) >= epsilon:
         policy[np.argmax(q_values)] = 1
     else:
         for i in range(0, len(policy)):
@@ -36,8 +60,53 @@ def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but s
 def reframe(obs, height, width): # Also crop away the top input 256x240
     obs = obs[32:, :]
     obs = cv2.cvtColor(obs, cv2.COLOR_BGR2GRAY) # Make gray and resize to get fewer inputs.
-    obs = cv2.resize(obs, (height,width)).reshape(height,width,-1)
+    obs = cv2.resize(obs, (height,width)) #.reshape(height,width,-1)
     return obs
+
+def make_nn(): # The neural network
+    model = Sequential()
+    model.add(Dense(20, input_shape=(2,) + (img_height,img_width,1), init='uniform', activation='relu')) # input should be every pixel 16*12, how many frames maybe 4
+    model.add(Flatten())       # Flatten input so as to have no problems with processing
+    model.add(Dense(18, init='uniform', activation='relu'))
+    model.add(Dense(10, init='uniform', activation='relu'))
+    model.add(Dense(output_size, init='uniform', activation='linear'))    # Same number of outputs as possible actions
+
+    model.compile(loss='mse', optimizer='adam', metrics=['accuracy'])
+
+    model.summary()
+    return model
+
+def make_cnn(): # Master CNN, no regularization.
+    model = Sequential()
+    model.add(Conv2D(32, kernel_size=(8, 8), input_shape= (img_height,img_width) + (2,) , activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    model.add(Flatten())
+    model.add(Dense(256, init='uniform', activation='relu'))    # Same number of outputs as possible actions
+    model.add(Dense(output_size, init='uniform', activation='linear'))    # Same number of outputs as possible actions
+    model.compile(loss='mse', optimizer='adam', metrics=['accuracy'])
+
+    model.summary()
+    return model
+
+def make_state():
+    observation = env.reset()
+    observation = reframe(observation, img_height, img_width)
+    state = np.stack((observation, observation), axis=2)
+    return state
+
+def switch_networks(): # Global values
+    offline_parameters = offline_network.get_weights()
+    online_parameters = online_network.get_weights()
+    online_network.set_weights(offline_parameters)
+    offline_network.set_weights(online_parameters)
+
+# Load the game
+env = retro.make(game='SuperMarioBros-Nes') # scenario = 'scenario.json'
 
 # Actions
 actions = [('RIGHT'), ('RIGHT', 'A')]
@@ -59,114 +128,71 @@ output_size = len(actions)
 epsilon = 1 # Chanche of taking a random action 
 gamma = 0.90 # Decay of reward for every step. Care about the future?
 epsilon_decay = 0.005 # Decay for epsilon
-mini_batches = 128 # Mini batch for learning 
-observation_steps = 10000 # 10k almost 400 time.
-img_height = 16 # Rescale size 256x240 /16... 84x84 needed?
-img_width = 15 
+mini_batches = 128 # Mini batch for learning, 300 states per exploration, 128 states is too much?? 
+img_height = 64 # Rescale size 256x240 /16... 84x84 needed?
+img_width = 64
 done = False
 epsilon_goal = 0.1 # When the learning phace should stop
 action_array = np.zeros(output_size) # No need for this shit
-name_number = 0
 frames_per_action = 10
-exploration_runs = 0
+exploration_runs = 1 # One to not run first run.
 
 queue = deque(maxlen=3000) # To save states for learning
 
-# The neural network
-def make_nn():
-    model = Sequential()
-    model.add(Dense(20, input_shape=(2,) + (img_height,img_width,1), init='uniform', activation='relu')) # input should be every pixel 16*12, how many frames maybe 4
-    model.add(Flatten())       # Flatten input so as to have no problems with processing
-    model.add(Dense(18, init='uniform', activation='relu'))
-    model.add(Dense(10, init='uniform', activation='relu'))
-    model.add(Dense(output_size, init='uniform', activation='linear'))    # Same number of outputs as possible actions
-
-    model.compile(loss='mse', optimizer='adam', metrics=['accuracy'])
-
-    model.summary()
-    return model
-
-def make_cnn(): # Inspired by flappy birds??
-    model = Sequential()
-    model.add(Conv2D(img_height*img_height*3, action='relu'))
-
-    model.add(Conv2D(img_height*img_height*3, action='relu'))
-    model.add(Conv2D(img_height*img_height*3, action='relu'))
-
-    model.compile(loss='mse', optimizer='adam', metrics=['accuracy'])
-
-    model.summary()
-
-    return model
-
-def make_state():
-    observation = env.reset()
-    observation = reframe(observation, img_height, img_width)
-    obs = np.expand_dims(observation, axis=0) 
-    state = np.stack((obs, obs), axis=1)
-    return state
-
-model = make_nn()
+# model = make_nn()
+online_network = make_cnn()
+offline_network = make_cnn()
 
 while True:
     state = make_state()
-    # observation = env.reset()
-    # observation = reframe(observation, img_height, img_width)
-    # obs = np.expand_dims(observation, axis=0) 
-    # state = np.stack((obs, obs), axis=1)
 
     total_reward = 0
     t = 0
     
     # Expolre the environment
-    while not (done): # It does not notice when it's game over?
-        if t % frames_per_action == 0: # Every fourth frame/step take a new action / reward should be 
+    while not (done): 
+        if t % frames_per_action == 0: # Every X frame, step take a new action 
 
             action_array = np.arange(output_size)
-            Q = model.predict(state) # Get state from model/network
-            policy = epsilon_greedy(Q, epsilon) # Get greedy or random choice for observation
+            Q = online_network.predict(np.expand_dims(state, axis=0)) # Get state from model/network
+            policy = epsilon_greedy(Q[0], epsilon) # Get greedy or random choice for observation
             action = np.random.choice(action_array, p = policy) # Choose an action
             action = actions[action]
 
             action = action_dict[action]
             observation_new, reward, done, info = env.step(action)
             observation_new = reframe(observation_new, img_height, img_width)
-            #print('Info {}'.format(info))
-            #print('Reward {}'.format(reward))
-            obs_new = np.expand_dims(observation_new, axis=0)
+            observation_new = np.expand_dims(observation_new, axis=-1)
 
-            state_new = np.append(np.expand_dims(obs_new, axis=0), state[:, :1, :], axis=1)
+            # print(observation_new.shape)
+            state_new = np.append(observation_new, state[:, :, :1], axis=2)
             queue.append((state, action, reward, state_new, done)) # To remember
 
             state = state_new
             total_reward += reward
             env.render()
-        else: # Check if dead every other step. Should update reward aswell? 
+        else: # Check if dead and update reward every step. 
             _, reward, done, _ = env.step(action)
             total_reward += reward
-        
-        # if total_reward >= 3000:
-        #     model.save_weights(str(name_number) + 'exploration_state.h5')
-        #     name_number += 1
         t += 1
-    print('Observing Finished')
-    print('Total reward in exploration: {}'.format(total_reward, done))
+    print('Exploration Finished')
+    print('Total reward in exploration: {}'.format(total_reward))
 
-    # This is only for the last step??
     state = make_state()
-    # observation = env.reset() # No need if the loop gets done..
-    # observation = reframe(observation, img_height, img_width)
-    # obs = np.expand_dims(observation, axis=0)
-    # state = np.stack((obs, obs), axis=1)
 
     # SECOND STEP: Learning from the observations (Experience replay)
     minibatch = random.sample(queue, mini_batches)                              # Sample some moves
 
-    inputs_shape = (mini_batches,) + state.shape[1:]
+    inputs_shape = (mini_batches,) + state.shape
     inputs = np.zeros(inputs_shape)
     targets = np.zeros((mini_batches, output_size))
 
-    for i in range(0, mini_batches):
+    reward_batch = np.zeros(mini_batches)
+    done_batch = np.zeros(mini_batches)
+    Q_sa_1 = [] # np.zeros(mini_batches)
+    Q_sa_2 = [] # np.zeros(mini_batches)
+
+    for i in range(0, mini_batches): # Remove this shit
         state = minibatch[i][0]
         action = minibatch[i][1]
         reward = minibatch[i][2]
@@ -174,55 +200,54 @@ while True:
         done = minibatch[i][4]
         
     # Build Bellman equation for the Q function
-        inputs[i:i+1] = np.expand_dims(state, axis=0)
-        targets[i] = model.predict(state)
-        Q_sa = model.predict(state_new)
-        
-        if done:
-            targets[i, action] = reward
-        else:
-            targets[i, action] = reward + gamma * np.max(Q_sa)
+        state = np.expand_dims(state, axis=0)
+        state_new = np.expand_dims(state_new, axis=0)
+        inputs[i:+1] = state
+        targets[i] = online_network.predict(state)
+        reward_batch[i] = reward
+        done_batch[i] = done
+        Q_sa_1.append(online_network.predict(state_new)) 
+        Q_sa_2.append(offline_network.predict(state_new))
 
-    # Train network to output the Q function
-        model.train_on_batch(inputs, targets)
+    td_target, actions_to_train = calculate_td_targets(Q_sa_1, Q_sa_2, reward_batch, done_batch, gamma)
+    for i in range(0,mini_batches):
+        targets[i, int(actions_to_train[i])] = td_target[i] 
+    online_network.train_on_batch(inputs, targets)
+
+    if random.uniform(0,1) > 0.5:
+        switch_networks()
+
     print('Learning Finished')
-    
-    epsilon = epsilon - epsilon_decay
     print('Epsilon is {}'.format(epsilon))
-    if(epsilon < epsilon_goal):
-       epsilon = epsilon - epsilon_decay 
+    if(epsilon > epsilon_goal):
+       epsilon = epsilon - epsilon_decay
+
     if(exploration_runs % 50 == 0): # THIRD STEP: Play every 50 step
-        model_name = 'play_state_5.h5'
-        model.save_weights(model_name)
+        model_name = 'play_state_DDQN2.h5'
+        online_network.save_weights(model_name)
         print('Saved the model as {}'.format(model_name))
         # model = model.load_weights('play_state.h5')
 
         state = make_state()
-        # observation = env.reset()
-        # observation = reframe(observation, img_height, img_width)
-        # obs = np.expand_dims(observation, axis=0)
-        # state = np.stack((obs, obs), axis=1)
-
         done = False
         total_reward = 0
         t = 0
 
         while not done:
-            t += 1
-
-            Q = model.predict(state) # Model chooses action
-            action = actions[np.argmax(Q[0])]
-            action = action_dict[action]
-            observation, reward, done, info = env.step(action)
-
-            observation = reframe(observation, img_height, img_width)
-            obs = np.expand_dims(observation, axis=0)
-            state = np.append(np.expand_dims(obs, axis=0), state[:, :1, :], axis=1)    
-            
-            total_reward += reward
             if t % 10 == 0:
+                Q = online_network.predict(np.expand_dims(state, axis=0)) # Model chooses action
+                action = actions[np.argmax(Q[0])]
+                action = action_dict[action]
+
+                observation, reward, done, info = env.step(action)
+                observation = reframe(observation, img_height, img_width)
+                observation = np.expand_dims(observation, axis=-1)
+                state = np.append(observation, state[:, :, :1], axis=2)
+        
                 env.render()
+            else:
+                _, reward, done, _ = env.step(action)
+            t += 1
+            total_reward += reward
         print('Game ended! Total reward: {}'.format(total_reward))
-        if name_number > 0: # Why even care when epsilon is high...
-            print('You have saved a state from eploration...')
     exploration_runs += 1 
