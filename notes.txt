@@ -1,0 +1,63 @@
+Changes to make
+------------------------------------
+Make it a CNN, how many input pictures should it have
+
+Should we crop the input so we don't care abour time and score
+with 16,12 we dont have that much precision pixels.
+
+Done state in our own scenario file.
+
+Iteration typ 3. Onsdag den 24 Oktober
+-----------------
+Gamme 0.9, 0.005 decay, epsilon 1, original scenario file, 10 % t sticky key, only jump and right
+
+Change Q[0] to get the right greedy value.
+Saving  models when reward is higher than 3k in exploration state
+Also saving model in the play state
+
+Result: 956 reward, jumped over the first goomba
+
+filename = play_state.h5
+130k parameters.
+------------------------------------------------------
+
+Iteration typ 4. Onsdag den 24 Oktober
+-----------------
+Gamme 0.9,
+0.005 decay,
+mini_batch = 128
+32, 30 - gave 32mil paramters
+16,15 . gave 2mil parameters
+original scenario file, 
+10 frames_per_action, 
+actions: only (jump and right), right, right a, right a b, right b
+
+network 16*15 input, 2 frames
+
+Cropping the input image
+
+filename = play_state4.h5
+
+Result: 555 reward, did not even jump over the first goomba. Runtime 2h.
+------------------------------------------------------
+
+Iteration typ 5. Onsdag den 24 Oktober
+-----------------
+Gamme 0.9,
+0.005 decay,
+mini_batch = 128
+32, 30 - gave 32mil paramters
+16,15 . gave 2mil parameters
+original scenario file, 
+10 frames_per_action, 
+filename = play_state5
+
+Actions: right and right A
+
+network 20 input, 2 frames
+remove B to make fewer possible steps
+
+mini_batches: AVG life 3000frames, 300states, 300/128 50%.
+Change queue size to oonly store 3000 frames, fit 10 runs.
+
+linear decreasing or exponential?
