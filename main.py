@@ -1,88 +1,124 @@
 import retro
 import random
+import pickle
 import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt 
+
 from keras.models import Sequential
 from keras.layers import Dense
 from collections import deque
+from model import CNN
+from retro_wrappers import make_retro, wrap_deepmind_retro
 
+GAMMA = 0.99
+MEMORY_SIZE = 900000
+BATCH_SIZE = 32
+TRAINING_FREQUENCY = 10
+OFFLINE_NETWORK_UPDATE_FREQUENCY = 40000
+MODEL_SAVE_UPDATE_FREQUENCY = 10000
+REPLAY_START_SIZE = 50000
+
+EPSILON_MAX = 1.0
+EPSILON_MIN = 0.1
+EXPLORATION_STEPS = 850000
+EPSILON_DECAY = (EPSILON_MAX - EPSILON_MIN) / EXPLORATION_STEPS
 
 class Agent:
     def __init__(self):
-        self.epsilon = 1
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.95
+        self.epsilon = EPSILON_MAX
+        self.epsilon_min = EPSILON_MIN
+        self.epsilon_decay = EPSILON_DECAY
+        self.memory = deque(maxlen=MEMORY_SIZE)
 
-        self.memory = deque(maxlen=100000)
+        self.offline = CNN((4, 84, 84), 6)
+        self.online = CNN((4, 84, 84), 6)
 
-        self.model = Sequential()
-        self.model.add(Dense(16, input_dim=9, activation='relu'))
-        self.model.add(Dense(16, activation='relu'))
-        self.model.add(Dense(10, activation='linear'))
-        self.model.compile(loss='mse', optimizer='nadam')
-        self.model.summary()
+    def remember(self, current_state, action, reward, next_state, done):
+        self.memory.append((current_state, action, reward, next_state, done))
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-
-    def act(self, state):
+    def act(self, current_state):
         if self.epsilon > np.random.uniform():
-            return np.random.randint(10)
-        expected_returns = self.model.predict(state)[0]
-        print("Expected return: {}".format(np.max(expected_returns)))
-        return np.argmax(self.model.predict(state)[0])
+            return np.random.randint(6)
+        current_state = np.swapaxes(np.expand_dims(current_state, axis=0), 1, 3)
+        expected_returns = self.online.model.predict(current_state)[0]
+        return np.argmax(expected_returns)
 
     def replay(self):
-        mini_batch = random.sample(self.memory, 1024)
-        for state, action, reward, next_state, done in mini_batch:
+        mini_batch = random.sample(self.memory, BATCH_SIZE)
+        loss = 0
+
+        for current_state, action, reward, next_state, done in mini_batch:
+            current_state = np.swapaxes(np.expand_dims(current_state, axis=0), 1, 3)
+            next_state = np.swapaxes(np.expand_dims(next_state, axis=0), 1, 3)
+
             target = reward
             if not done:
-                target = reward + 0.9 * \
-                         np.max(self.model.predict(next_state)[0])
-            target_f = self.model.predict(state)
+                target = reward + GAMMA * \
+                         np.max(self.offline.model.predict(next_state)[0])
+            target_f = self.online.model.predict(current_state)
             target_f[0, action] = target
-            self.model.fit(state, target_f, epochs=1, verbose=0)
+            history = self.online.model.fit(current_state, target_f, epochs=1, verbose=0)
+            loss += history.history['loss'][0]
+
         if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            self.epsilon -= EPSILON_DECAY
+
+        return loss / BATCH_SIZE
+
 
 if __name__ == '__main__':
-    actions = [(),('LEFT'), ('RIGHT'), ('A'), ('B'), ('DOWN'), ('LEFT','A'), ('RIGHT', 'A'), ('LEFT', 'B'), ('RIGHT', 'B')]
+    actions = [(), ('LEFT'), ('RIGHT'), ('A'), ('RIGHT', 'A'), ('LEFT','A')]
     action_dict = {():[0,0,0,0,0,0,0,0,0] 
         , ('LEFT'): [0,0,0,0,0,0,1,0,0]
         , ('RIGHT'): [0,0,0,0,0,0,0,1,0]
         , ('A') : [0,0,0,0,0,0,0,0,1]
-        , ('B'): [1,0,0,0,0,0,0,0,0]
         , ('LEFT','A'): [0,0,0,0,0,0,1,0,1]
-        , ('RIGHT', 'A'): [0,0,0,0,0,0,0,1,1]
-        , ('LEFT','B'): [1,0,0,0,0,0,1,0,0]
-        , ('RIGHT', 'B'): [1,0,0,0,0,0,0,1,0]
-        , ('DOWN'): [0,0,0,0,0,1,0,0,0]}
+        , ('RIGHT', 'A'): [0,0,0,0,0,0,0,1,1]}
 
-    env = retro.make('SuperMarioBros-Nes', retro.State.DEFAULT)
+    env = wrap_deepmind_retro(retro.make('SuperMarioBros-Nes', retro.State.DEFAULT))
     agent = Agent()
 
-    for e in range(1000):
-        env.reset()
-        action = [0,0,0,0,0,0,0,0,0]
-        _, _, done, state = env.step(action)
-        state = np.reshape(list(state.values()), [1, 9])
-        t = 0
-        
-        while not done:
-            if t % 4 == 0:
-                action_number = agent.act(state)
-                action = action_dict[actions[action_number]]
-            if t % 100 == 0:
-                env.render()
-            _, reward, done, next_state = env.step(action)
-            print(next_state )
-            next_state = np.reshape(list(next_state.values()), [1, 9])
+    total_step = 0
+    loss_history = []
+    reward_history = []
 
-            agent.remember(state, action_number, reward, next_state, done)
+    while True
+        current_state = env.reset()
+        total_reward = 0
+        done = False
 
-            state = next_state
-            t += 1
+        while True:
+            # if total_step % 100 == 0:
+            #     env.render()
+            action_number = agent.act(current_state)
+            action = action_dict[actions[action_number]]
+            next_state, reward, done, info = env.step(action)
+
+            agent.remember(current_state, action_number, reward, next_state, done)
+
+            current_state = next_state
+            total_reward += reward
+            total_step += 1
+
+            if total_step > REPLAY_START_SIZE and total_step % TRAINING_FREQUENCY == 0:
+                loss = agent.replay()
+                loss_history.append(loss)
             
-        
+            if total_step % OFFLINE_NETWORK_UPDATE_FREQUENCY == 0:
+                print('Updating offline network...')
+                agent.offline.model.set_weights(agent.online.model.get_weights())
+            
+            if total_step % MODEL_SAVE_UPDATE_FREQUENCY == 0:
+                with open('loss_history.pkl', 'wb') as f:
+                    pickle.dump(loss_history, f)
+                with open('reward_history.pkl', 'wb') as f:
+                    pickle.dump(reward_history, f)
 
-        print('Learning... epsilon = {}'.format(agent.epsilon))
-        agent.replay()
+                agent.online.model.save('online_model.h5')
+
+            if info['lives'] != 2:
+                break 
+
+        print('Total reward = {}'.format(total_reward))
+        reward_history.append(total_reward)
