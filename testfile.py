@@ -45,9 +45,9 @@ def calculate_td_targets(q1_batch, q2_batch, r_batch, t_batch, gamma=.90):
             actions[i] = 0
         else:
             Y[i] = r_batch[i] + gamma * (q2_batch[i][0][np.argmax(q1_batch[i][0])])
-            actions[i] = np.argmax(q2_batch[i][0]) # Is this one correct!??!?!
-            print(Y[i], r_batch[i], q1_batch[i], q2_batch[i], actions[i])
-            print(q1_batch[i][0], q1_batch[i][:])
+            actions[i] = np.argmax(q1_batch[i][0]) # q_1 should choose the action.
+            # print(Y[i], r_batch[i], q1_batch[i], q2_batch[i], actions[i])
+            # print(q1_batch[i][0], q1_batch[i][:])
     return Y, actions
 
 def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but shit the same
@@ -108,10 +108,10 @@ def switch_networks(): # Global values
     offline_network.set_weights(online_parameters)
 
 # Load the game
-env = retro.make(game='SuperMarioBros-Nes') # scenario = 'scenario.json'
+env = retro.make(game='SuperMarioBros-Nes', scenario = 'scenario.json')
 
 # Actions
-actions = [('RIGHT'), ('RIGHT', 'A')]
+actions = [('RIGHT'), ('RIGHT', 'A')] #  ('LEFT'), ('LEFT', 'A')
 action_dict = {():[0,0,0,0,0,0,0,0,0] 
         , ('LEFT'): [0,0,0,0,0,0,1,0,0]
         , ('RIGHT'): [0,0,0,0,0,0,0,1,0]
@@ -130,7 +130,7 @@ output_size = len(actions)
 epsilon = 1 # Chanche of taking a random action 
 gamma = 0.90 # Decay of reward for every step. Care about the future?
 epsilon_decay = 0.005 # Decay for epsilon
-mini_batches = 128 # Mini batch for learning, 300 states per exploration, 128 states is too much?? 
+mini_batches = 16 # Mini batch for learning, 300 states per exploration, 128 states is too much?? 
 img_height = 64 # Rescale size 256x240 /16... 84x84 needed?
 img_width = 64
 done = False
@@ -139,7 +139,7 @@ action_array = np.zeros(output_size) # No need for this shit
 frames_per_action = 10
 exploration_runs = 1 # One to not run first run.
 
-queue = deque(maxlen=3000) # To save states for learning
+queue = deque(maxlen=20000) # To save states for learning
 
 # model = make_nn()
 online_network = make_cnn()
@@ -148,11 +148,14 @@ offline_network = make_cnn()
 while True:
     state = make_state()
 
+    lives = 2
     total_reward = 0
     t = 0
+
+    print('Epsilon is {}'.format(epsilon))
     
     # Expolre the environment
-    while not (done): 
+    while (t != 500): 
         if t % frames_per_action == 0: # Every X frame, step take a new action 
 
             action_array = np.arange(output_size)
@@ -170,12 +173,18 @@ while True:
             queue.append((state, action, reward, state_new, done)) # To remember
 
             state = state_new
-            total_reward += reward
+            # total_reward += reward
             env.render()
         else: # Check if dead and update reward every step. 
-            _, reward, done, _ = env.step(action)
-            total_reward += reward
+            _, reward, done, info = env.step(action)
+            
+        total_reward += reward
+        #if (info['lives'] != 2):
+        #    print('I AMA FUCKING DEAD!!!')
+        #    print(info['lives'], reward)
         t += 1
+        # print(reward)
+        # lives = info['lives']
     print('Exploration Finished')
     print('Total reward in exploration: {}'.format(total_reward))
 
@@ -219,7 +228,6 @@ while True:
         switch_networks()
 
     print('Learning Finished')
-    print('Epsilon is {}'.format(epsilon))
     if(epsilon > epsilon_goal):
        epsilon = epsilon - epsilon_decay
 
@@ -234,7 +242,7 @@ while True:
         total_reward = 0
         t = 0
 
-        while not done:
+        while lives != 0 :
             if t % 10 == 0:
                 Q = online_network.predict(np.expand_dims(state, axis=0)) # Model chooses action
                 action = actions[np.argmax(Q[0])]
@@ -247,8 +255,9 @@ while True:
         
                 env.render()
             else:
-                _, reward, done, _ = env.step(action)
+                _, reward, done, info = env.step(action)
             t += 1
+            lives = info['lives']
             total_reward += reward
         print('Game ended! Total reward: {}'.format(total_reward))
     exploration_runs += 1 
