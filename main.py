@@ -4,85 +4,128 @@ import numpy as np
 from keras.models import Sequential
 from keras.layers import Dense
 from collections import deque
+from model import CNN
+from retro_wrappers import make_retro, wrap_deepmind_retro
 
+GAMMA = 0.99
+MEMORY_SIZE = 900000
+BATCH_SIZE = 32
+TRAINING_FREQUENCY = 1000
+OFFLINE_NETWORK_UPDATE_FREQUENCY = 40000
+# MODEL_PERSISTENCE_UPDATE_FREQUENCY = 10000
+REPLAY_START_SIZE = 50000
+
+EPSILON_MAX = 1.0
+EPSILON_MIN = 0.1
+EXPLORATION_STEPS = 850000
+EPSILON_DECAY = (EPSILON_MAX-EPSILON_MIN)/EXPLORATION_STEPS
 
 class Agent:
     def __init__(self):
-        self.epsilon = 1
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.95
+        self.epsilon = EPSILON_MAX
+        self.epsilon_min = EPSILON_MIN
+        self.epsilon_decay = EPSILON_DECAY
+        self.memory = deque(maxlen=MEMORY_SIZE)
 
-        self.memory = deque(maxlen=100000)
+        self.offline = CNN((4, 84, 84), 6)
+        self.online = CNN((4, 84, 84), 6)
 
-        self.model = Sequential()
-        self.model.add(Dense(16, input_dim=9, activation='relu'))
-        self.model.add(Dense(16, activation='relu'))
-        self.model.add(Dense(10, activation='linear'))
-        self.model.compile(loss='mse', optimizer='nadam')
-        self.model.summary()
+    def remember(self, current_state, action, reward, next_state, done):
+        self.memory.append((current_state, action, reward, next_state, done))
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-
-    def act(self, state):
+    def act(self, current_state):
         if self.epsilon > np.random.uniform():
-            return np.random.randint(10)
-        expected_returns = self.model.predict(state)[0]
-        print("Expected return: {}".format(np.max(expected_returns)))
-        return np.argmax(self.model.predict(state)[0])
+            return np.random.randint(6)
+        current_state = np.swapaxes(np.expand_dims(current_state, axis=0), 1, 3)
+        expected_returns = self.online.model.predict(current_state)[0]
+        return np.argmax(expected_returns)
 
     def replay(self):
-        mini_batch = random.sample(self.memory, 1024)
-        for state, action, reward, next_state, done in mini_batch:
+        mini_batch = random.sample(self.memory, BATCH_SIZE)
+        for current_state, action, reward, next_state, done in mini_batch:
+            current_state = np.swapaxes(np.expand_dims(current_state, axis=0), 1, 3)
+            next_state = np.swapaxes(np.expand_dims(next_state, axis=0), 1, 3)
+
             target = reward
             if not done:
-                target = reward + 0.9 * \
-                         np.max(self.model.predict(next_state)[0])
-            target_f = self.model.predict(state)
+                target = reward + GAMMA * \
+                         np.max(self.offline.model.predict(next_state)[0])
+            target_f = self.online.model.predict(current_state)
             target_f[0, action] = target
-            self.model.fit(state, target_f, epochs=1, verbose=0)
+            self.online.model.fit(current_state, target_f, epochs=1, verbose=0)
         if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            self.epsilon -= EPSILON_DECAY
 
 if __name__ == '__main__':
-    actions = [(),('LEFT'), ('RIGHT'), ('A'), ('B'), ('DOWN'), ('LEFT','A'), ('RIGHT', 'A'), ('LEFT', 'B'), ('RIGHT', 'B')]
+    actions = [(), ('LEFT'), ('RIGHT'), ('A'), ('RIGHT', 'A'), ('LEFT','A')]
     action_dict = {():[0,0,0,0,0,0,0,0,0] 
         , ('LEFT'): [0,0,0,0,0,0,1,0,0]
         , ('RIGHT'): [0,0,0,0,0,0,0,1,0]
         , ('A') : [0,0,0,0,0,0,0,0,1]
-        , ('B'): [1,0,0,0,0,0,0,0,0]
         , ('LEFT','A'): [0,0,0,0,0,0,1,0,1]
-        , ('RIGHT', 'A'): [0,0,0,0,0,0,0,1,1]
-        , ('LEFT','B'): [1,0,0,0,0,0,1,0,0]
-        , ('RIGHT', 'B'): [1,0,0,0,0,0,0,1,0]
-        , ('DOWN'): [0,0,0,0,0,1,0,0,0]}
+        , ('RIGHT', 'A'): [0,0,0,0,0,0,0,1,1]}
 
-    env = retro.make('SuperMarioBros-Nes', retro.State.DEFAULT)
+    env = wrap_deepmind_retro(retro.make('SuperMarioBros-Nes', retro.State.DEFAULT))
     agent = Agent()
 
+    total_step = 0
+
     for e in range(1000):
-        env.reset()
-        action = [0,0,0,0,0,0,0,0,0]
-        _, _, done, state = env.step(action)
-        state = np.reshape(list(state.values()), [1, 9])
-        t = 0
+        current_state = env.reset()
+        step = 0
+        total_reward = 0
+        done = False
         
         while not done:
-            if t % 4 == 0:
-                action_number = agent.act(state)
-                action = action_dict[actions[action_number]]
-            if t % 100 == 0:
+            if total_step % 100 == 0:
                 env.render()
-            _, reward, done, next_state = env.step(action)
-            print(next_state )
-            next_state = np.reshape(list(next_state.values()), [1, 9])
+            action_number = agent.act(current_state)
+            action = action_dict[actions[action_number]]
+            next_state, reward, done, info = env.step(action)
 
-            agent.remember(state, action_number, reward, next_state, done)
+            agent.remember(current_state, action_number, reward, next_state, done)
 
-            state = next_state
-            t += 1
+            current_state = next_state
+            total_reward += reward
+            total_step += 1
+
+            if total_step > REPLAY_START_SIZE and total_step % TRAINING_FREQUENCY == 0:
+                #print('Learning... epsilon = {}'.format(agent.epsilon))
+                agent.replay()
             
-        
+            if total_step % OFFLINE_NETWORK_UPDATE_FREQUENCY == 0:
+                print('Updating offline network...')
+                agent.offline.model.set_weights(agent.online.model.get_weights())
 
-        print('Learning... epsilon = {}'.format(agent.epsilon))
-        agent.replay()
+        print('Total reward = {}'.format(total_reward))
+
+'''
+--------------------
+        batch = np.asarray(random.sample(self.memory, BATCH_SIZE))
+        if len(batch) < BATCH_SIZE:
+            return
+
+        current_states = []
+        q_values = []
+        max_q_values = []
+
+        for entry in batch:
+            current_state = np.expand_dims(np.asarray(entry["current_state"]).astype(np.float64), axis=0)
+            current_states.append(current_state)
+            next_state = np.expand_dims(np.asarray(entry["next_state"]).astype(np.float64), axis=0)
+            next_state_prediction = self.ddqn_target.predict(next_state).ravel()
+            next_q_value = np.max(next_state_prediction)
+            q = list(self.ddqn.predict(current_state)[0])
+            if entry["terminal"]:
+                q[entry["action"]] = entry["reward"]
+            else:
+                q[entry["action"]] = entry["reward"] + GAMMA * next_q_value
+            q_values.append(q)
+            max_q_values.append(np.max(q))
+
+        fit = self.ddqn.fit(np.asarray(current_states).squeeze(),
+                            np.asarray(q_values).squeeze(),
+                            batch_size=BATCH_SIZE,
+                            verbose=0
+--------------------
+'''
