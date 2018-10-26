@@ -1,6 +1,10 @@
 import retro
 import random
+import pickle
 import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt 
+
 from keras.models import Sequential
 from keras.layers import Dense
 from collections import deque
@@ -10,15 +14,15 @@ from retro_wrappers import make_retro, wrap_deepmind_retro
 GAMMA = 0.99
 MEMORY_SIZE = 900000
 BATCH_SIZE = 32
-TRAINING_FREQUENCY = 1000
+TRAINING_FREQUENCY = 10
 OFFLINE_NETWORK_UPDATE_FREQUENCY = 40000
-# MODEL_PERSISTENCE_UPDATE_FREQUENCY = 10000
+MODEL_SAVE_UPDATE_FREQUENCY = 10000
 REPLAY_START_SIZE = 50000
 
 EPSILON_MAX = 1.0
 EPSILON_MIN = 0.1
 EXPLORATION_STEPS = 850000
-EPSILON_DECAY = (EPSILON_MAX-EPSILON_MIN)/EXPLORATION_STEPS
+EPSILON_DECAY = (EPSILON_MAX - EPSILON_MIN) / EXPLORATION_STEPS
 
 class Agent:
     def __init__(self):
@@ -42,6 +46,8 @@ class Agent:
 
     def replay(self):
         mini_batch = random.sample(self.memory, BATCH_SIZE)
+        loss = 0
+
         for current_state, action, reward, next_state, done in mini_batch:
             current_state = np.swapaxes(np.expand_dims(current_state, axis=0), 1, 3)
             next_state = np.swapaxes(np.expand_dims(next_state, axis=0), 1, 3)
@@ -52,9 +58,14 @@ class Agent:
                          np.max(self.offline.model.predict(next_state)[0])
             target_f = self.online.model.predict(current_state)
             target_f[0, action] = target
-            self.online.model.fit(current_state, target_f, epochs=1, verbose=0)
+            history = self.online.model.fit(current_state, target_f, epochs=1, verbose=0)
+            loss += history.history['loss'][0]
+
         if self.epsilon > self.epsilon_min:
             self.epsilon -= EPSILON_DECAY
+
+        return loss / BATCH_SIZE
+
 
 if __name__ == '__main__':
     actions = [(), ('LEFT'), ('RIGHT'), ('A'), ('RIGHT', 'A'), ('LEFT','A')]
@@ -69,16 +80,17 @@ if __name__ == '__main__':
     agent = Agent()
 
     total_step = 0
+    loss_history = []
+    reward_history = []
 
-    for e in range(1000):
+    while True
         current_state = env.reset()
-        step = 0
         total_reward = 0
         done = False
-        
-        while not done:
-            if total_step % 100 == 0:
-                env.render()
+
+        while True:
+            # if total_step % 100 == 0:
+            #     env.render()
             action_number = agent.act(current_state)
             action = action_dict[actions[action_number]]
             next_state, reward, done, info = env.step(action)
@@ -90,42 +102,23 @@ if __name__ == '__main__':
             total_step += 1
 
             if total_step > REPLAY_START_SIZE and total_step % TRAINING_FREQUENCY == 0:
-                #print('Learning... epsilon = {}'.format(agent.epsilon))
-                agent.replay()
+                loss = agent.replay()
+                loss_history.append(loss)
             
             if total_step % OFFLINE_NETWORK_UPDATE_FREQUENCY == 0:
                 print('Updating offline network...')
                 agent.offline.model.set_weights(agent.online.model.get_weights())
+            
+            if total_step % MODEL_SAVE_UPDATE_FREQUENCY == 0:
+                with open('loss_history.pkl', 'wb') as f:
+                    pickle.dump(loss_history, f)
+                with open('reward_history.pkl', 'wb') as f:
+                    pickle.dump(reward_history, f)
+
+                agent.online.model.save('online_model.h5')
+
+            if info['lives'] != 2:
+                break 
 
         print('Total reward = {}'.format(total_reward))
-
-'''
---------------------
-        batch = np.asarray(random.sample(self.memory, BATCH_SIZE))
-        if len(batch) < BATCH_SIZE:
-            return
-
-        current_states = []
-        q_values = []
-        max_q_values = []
-
-        for entry in batch:
-            current_state = np.expand_dims(np.asarray(entry["current_state"]).astype(np.float64), axis=0)
-            current_states.append(current_state)
-            next_state = np.expand_dims(np.asarray(entry["next_state"]).astype(np.float64), axis=0)
-            next_state_prediction = self.ddqn_target.predict(next_state).ravel()
-            next_q_value = np.max(next_state_prediction)
-            q = list(self.ddqn.predict(current_state)[0])
-            if entry["terminal"]:
-                q[entry["action"]] = entry["reward"]
-            else:
-                q[entry["action"]] = entry["reward"] + GAMMA * next_q_value
-            q_values.append(q)
-            max_q_values.append(np.max(q))
-
-        fit = self.ddqn.fit(np.asarray(current_states).squeeze(),
-                            np.asarray(q_values).squeeze(),
-                            batch_size=BATCH_SIZE,
-                            verbose=0
---------------------
-'''
+        reward_history.append(total_reward)
