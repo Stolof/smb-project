@@ -46,6 +46,8 @@ def calculate_td_targets(q1_batch, q2_batch, r_batch, t_batch, gamma=.90):
         else:
             Y[i] = r_batch[i] + gamma * (q2_batch[i][0][np.argmax(q1_batch[i][0])])
             actions[i] = np.argmax(q2_batch[i][0]) # Is this one correct!??!?!
+            print(Y[i], r_batch[i], q1_batch[i], q2_batch[i], actions[i])
+            print(q1_batch[i][0], q1_batch[i][:])
     return Y, actions
 
 def epsilon_greedy(q_values, epsilon): # Don't need to predict every time. but shit the same
